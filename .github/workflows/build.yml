@@ -1,0 +1,94 @@
+name: Build Digital Seva Kendra APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP Parts (if uploaded as ZIPs)
+        run: |
+          if ls Part*.zip 1> /dev/null 2>&1; then
+            for z in Part*.zip; do
+              echo "Extracting $z..."
+              unzip -oq "$z" -x ".github/*"
+            done
+          fi
+          test -f settings.gradle
+
+      - name: Download Offline Vendor Assets (JS & Google Fonts)
+        run: |
+          mkdir -p app/src/main/assets/www/vendor/fonts
+          curl -fsSL "https://cdn.tailwindcss.com/3.4.17" -o app/src/main/assets/www/vendor/tailwindcss.js
+          curl -fsSL "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" -o app/src/main/assets/www/vendor/html2canvas.min.js
+          curl -fsSL "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" -o app/src/main/assets/www/vendor/jspdf.umd.min.js
+          python3 - << 'EOF'
+          import hashlib, os, re, urllib.request
+
+          ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+          fonts_urls = [
+              "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+Devanagari:wght@400;500;600;700;800&family=Noto+Serif:wght@600;700;800&family=Roboto+Mono:wght@500;700;900&display=swap",
+              "https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Tiro+Devanagari+Hindi:ital@0;1&family=Mukta:wght@400;500;600;700;800;900&display=swap",
+              "https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Kalam:wght@400;700&family=Courier+Prime:wght@700&family=Share+Tech+Mono&display=swap",
+          ]
+          vendor_dir = "app/src/main/assets/www/vendor"
+          fonts_dir = os.path.join(vendor_dir, "fonts")
+          combined_css = []
+          downloaded = {}
+
+          for url in fonts_urls:
+              req = urllib.request.Request(url, headers={"User-Agent": ua})
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  css = resp.read().decode("utf-8")
+
+              def repl(match):
+                  font_url = match.group(1)
+                  if font_url not in downloaded:
+                      h = hashlib.sha256(font_url.encode("utf-8")).hexdigest()[:16]
+                      ext = ".woff2" if ".woff2" in font_url else ".ttf"
+                      fname = f"{h}{ext}"
+                      fpath = os.path.join(fonts_dir, fname)
+                      f_req = urllib.request.Request(font_url, headers={"User-Agent": ua})
+                      with urllib.request.urlopen(f_req, timeout=30) as f_resp:
+                          with open(fpath, "wb") as out:
+                              out.write(f_resp.read())
+                      downloaded[font_url] = fname
+                  return f"url('fonts/{downloaded[font_url]}')"
+
+              css = re.sub(r"url\((https://[^)]+)\)", repl, css)
+              combined_css.append(css)
+
+          with open(os.path.join(vendor_dir, "fonts.css"), "w", encoding="utf-8") as out:
+              out.write("\n".join(combined_css))
+          print(f"Downloaded {len(downloaded)} font files into {fonts_dir}")
+          EOF
+          test -s app/src/main/assets/www/vendor/tailwindcss.js
+          test -s app/src/main/assets/www/vendor/html2canvas.min.js
+          test -s app/src/main/assets/www/vendor/jspdf.umd.min.js
+          test -s app/src/main/assets/www/vendor/fonts.css
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Digital-Seva-Kendra-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
